@@ -4,14 +4,20 @@ import dotenv from 'dotenv'
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
 import Stripe from 'stripe'
-import { PrismaClient } from '@prisma/client'
 
 dotenv.config()
 
 const app = express()
 const PORT = process.env.PORT || 5000
-const prisma = new PrismaClient()
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2024-04-10' })
+
+// ─── IN-MEMORY STORAGE (MOCK DB) ──────────────────────────────────────────────
+// In a real production app, you'd use a database like MongoDB or PostgreSQL.
+// For now, we'll use in-memory arrays to keep the app running without Prisma.
+const USERS = []
+const PROFILES_ARCHITECT = []
+const PROFILES_SUPPLIER = []
+const DOCUMENTS = []
 
 // ─── CORS ─────────────────────────────────────────────────────────────────────
 app.use(cors({
@@ -22,7 +28,8 @@ app.use(cors({
 }))
 
 app.use('/api/payments/webhook', express.raw({ type: 'application/json' }))
-app.use(express.json())
+app.use(express.json({ limit: '50mb' }))
+app.use(express.urlencoded({ limit: '50mb', extended: true }))
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 function signToken(userId, role) {
@@ -40,10 +47,7 @@ async function protect(req, res, next) {
     if (!authHeader?.startsWith('Bearer ')) return res.status(401).json({ message: 'No token provided.' })
     const token = authHeader.split(' ')[1]
     const decoded = jwt.verify(token, process.env.JWT_SECRET)
-    const user = await prisma.user.findUnique({
-      where: { id: decoded.userId },
-      select: { id: true, role: true, subscriptionStatus: true },
-    })
+    const user = USERS.find(u => u.id === decoded.userId)
     if (!user) return res.status(401).json({ message: 'User no longer exists.' })
     req.user = { userId: user.id, role: user.role, subscriptionStatus: user.subscriptionStatus }
     next()
@@ -52,19 +56,19 @@ async function protect(req, res, next) {
   }
 }
 
-function checkExpiredLicences() {
-  setInterval(async () => {
-    try {
-      const now = new Date()
-      await prisma.profileSupplier.updateMany({
-        where: {
-          verificationStatus: 'VERIFIED',
-          tradeLicenceExpiry: { lt: now }
-        },
-        data: { verificationStatus: 'EXPIRED' }
-      })
-    } catch (e) {}
-  }, 1000 * 60 * 60 * 24) // run every 24 hours
+async function protectAdmin(req, res, next) {
+  try {
+    const authHeader = req.headers.authorization
+    if (!authHeader?.startsWith('Bearer ')) return res.status(401).json({ message: 'No token provided.' })
+    const token = authHeader.split(' ')[1]
+    const decoded = jwt.verify(token, process.env.JWT_SECRET)
+    const user = USERS.find(u => u.id === decoded.userId)
+    if (!user || user.role !== 'ADMIN') return res.status(403).json({ message: 'Admin access required.' })
+    req.user = { userId: user.id, role: user.role }
+    next()
+  } catch (err) {
+    return res.status(401).json({ message: 'Invalid or expired token.' })
+  }
 }
 
 // ─── HEALTH ───────────────────────────────────────────────────────────────────
@@ -77,32 +81,48 @@ app.post('/api/auth/register', async (req, res) => {
     const { email, password, role, profile } = req.body
     if (!email || !password || !role || !profile) return res.status(400).json({ message: 'All fields required.' })
     if (!['ARCHITECT', 'SUPPLIER'].includes(role)) return res.status(400).json({ message: 'Invalid role.' })
+    
+    if (USERS.find(u => u.email === email)) return res.status(409).json({ message: 'Email already in use.' })
+
     const hashed = await bcrypt.hash(password, 12)
-    const user = await prisma.$transaction(async (tx) => {
-      const newUser = await tx.user.create({ data: { email, password: hashed, role } })
-      if (role === 'ARCHITECT') {
-        const { companyName, licenseNumber, portfolio } = profile
-        if (!companyName || !licenseNumber) throw new Error('companyName and licenseNumber required.')
-        await tx.profileArchitect.create({ data: { companyName, licenseNumber, portfolio: portfolio || null, userId: newUser.id } })
-      } else {
-        const { shopName, category, taxId, tradeLicenceNumber, tradeLicenceEmirate, tradeLicenceExpiry, tradeLicenceDoc } = profile
-        if (!shopName || !category || !taxId) throw new Error('shopName, category and taxId required.')
-        await tx.profileSupplier.create({
-          data: {
-            shopName, category, taxId, userId: newUser.id,
-            tradeLicenceNumber: tradeLicenceNumber || null,
-            tradeLicenceEmirate: tradeLicenceEmirate || null,
-            tradeLicenceExpiry: tradeLicenceExpiry ? new Date(tradeLicenceExpiry) : null,
-            tradeLicenceDoc: tradeLicenceDoc || null,
-            verificationStatus: 'PENDING'
-          }
-        })
-      }
-      return newUser
-    })
-    return res.status(201).json({ message: 'Account created.', user: safeUser(user) })
+    const newUser = {
+      id: Math.random().toString(36).substr(2, 9),
+      email,
+      password: hashed,
+      role,
+      subscriptionStatus: 'FREE',
+      createdAt: new Date()
+    }
+    USERS.push(newUser)
+    
+    if (role === 'ARCHITECT') {
+      const { companyName, licenseNumber, portfolio } = profile
+      PROFILES_ARCHITECT.push({ 
+        id: Math.random().toString(36).substr(2, 9),
+        companyName, licenseNumber, portfolio: portfolio || null, userId: newUser.id 
+      })
+    } else {
+      const { 
+        shopName, category, taxId, phoneNumber, contactPerson, address,
+        tradeLicenceNumber, tradeLicenceEmirate, tradeLicenceExpiry, tradeLicenceIssueDate 
+      } = profile
+      
+      PROFILES_SUPPLIER.push({
+        id: Math.random().toString(36).substr(2, 9),
+        shopName, category, taxId, userId: newUser.id,
+        phoneNumber: phoneNumber || null,
+        contactPerson: contactPerson || null,
+        address: address || null,
+        tradeLicenceNumber: tradeLicenceNumber || null,
+        tradeLicenceEmirate: tradeLicenceEmirate || null,
+        tradeLicenceExpiry: tradeLicenceExpiry ? new Date(tradeLicenceExpiry) : null,
+        tradeLicenceIssueDate: tradeLicenceIssueDate ? new Date(tradeLicenceIssueDate) : null,
+        verificationStatus: 'PENDING'
+      })
+    }
+    
+    return res.status(201).json({ message: 'Account created.', user: safeUser(newUser) })
   } catch (err) {
-    if (err.code === 'P2002') return res.status(409).json({ message: 'Email or licence number already in use.' })
     return res.status(400).json({ message: err.message || 'Registration failed.' })
   }
 })
@@ -111,9 +131,8 @@ app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body
     if (!email || !password) return res.status(400).json({ message: 'Email and password required.' })
-    const user = await prisma.user.findUnique({ where: { email } })
-    const dummyHash = '$2a$12$dummyhashtopreventtimingattacks00000000000000000000000'
-    const isMatch = user ? await bcrypt.compare(password, user.password) : await bcrypt.compare(password, dummyHash).then(() => false)
+    const user = USERS.find(u => u.email === email)
+    const isMatch = user ? await bcrypt.compare(password, user.password) : false
     if (!user || !isMatch) return res.status(401).json({ message: 'Invalid email or password.' })
     const token = signToken(user.id, user.role)
     return res.json({ token, user: safeUser(user) })
@@ -125,180 +144,53 @@ app.post('/api/auth/login', async (req, res) => {
 // ─── USERS ────────────────────────────────────────────────────────────────────
 app.get('/api/users/me', protect, async (req, res) => {
   try {
-    const user = await prisma.user.findUnique({
-      where: { id: req.user.userId },
-      include: { profileArchitect: true, profileSupplier: true },
-    })
+    const user = USERS.find(u => u.id === req.user.userId)
     if (!user) return res.status(404).json({ message: 'User not found.' })
-    const { password, ...safeU } = user
-    return res.json({ user: safeU, profile: user.role === 'ARCHITECT' ? user.profileArchitect : user.profileSupplier })
+    const profile = user.role === 'ARCHITECT' 
+      ? PROFILES_ARCHITECT.find(p => p.userId === user.id)
+      : PROFILES_SUPPLIER.find(p => p.userId === user.id)
+    
+    const docs = user.role === 'SUPPLIER' ? DOCUMENTS.filter(d => d.supplierId === profile?.id) : []
+    
+    return res.json({ user: safeUser(user), profile: { ...profile, documents: docs } })
   } catch (err) {
     return res.status(500).json({ message: 'Failed to fetch user.' })
   }
 })
 
-// ─── ADMIN ROUTES ─────────────────────────────────────────────────────────────
-
-// Get all suppliers with verification status
-app.get('/api/admin/suppliers', protect, async (req, res) => {
-  try {
-    const suppliers = await prisma.profileSupplier.findMany({
-      include: { user: { select: { email: true, createdAt: true } } },
-      orderBy: { createdAt: 'desc' }
-    })
-    return res.json({ suppliers })
-  } catch (err) {
-    return res.status(500).json({ message: 'Failed to fetch suppliers.' })
-  }
-})
-
-// Get pending suppliers only
-app.get('/api/admin/suppliers/pending', protect, async (req, res) => {
-  try {
-    const suppliers = await prisma.profileSupplier.findMany({
-      where: { verificationStatus: 'PENDING' },
-      include: { user: { select: { email: true, createdAt: true } } },
-      orderBy: { createdAt: 'desc' }
-    })
-    return res.json({ suppliers, count: suppliers.length })
-  } catch (err) {
-    return res.status(500).json({ message: 'Failed to fetch pending suppliers.' })
-  }
-})
-
-// Verify a supplier
-app.patch('/api/admin/suppliers/:id/verify', protect, async (req, res) => {
-  try {
-    const { id } = req.params
-    const { status, note } = req.body
-    if (!['VERIFIED', 'REJECTED'].includes(status)) return res.status(400).json({ message: 'Status must be VERIFIED or REJECTED.' })
-    const supplier = await prisma.profileSupplier.update({
-      where: { id },
-      data: {
-        verificationStatus: status,
-        verificationNote: note || null,
-        verifiedAt: status === 'VERIFIED' ? new Date() : null,
-        verifiedBy: 'admin'
-      }
-    })
-    return res.json({ supplier, message: `Supplier ${status.toLowerCase()} successfully.` })
-  } catch (err) {
-    return res.status(500).json({ message: 'Failed to update verification.' })
-  }
-})
-
-// Get all users
-app.get('/api/admin/users', protect, async (req, res) => {
-  try {
-    const users = await prisma.user.findMany({
-      select: { id: true, email: true, role: true, subscriptionStatus: true, createdAt: true },
-      orderBy: { createdAt: 'desc' }
-    })
-    return res.json({ users, count: users.length })
-  } catch (err) {
-    return res.status(500).json({ message: 'Failed to fetch users.' })
-  }
-})
-
-// ─── PROJECTS ─────────────────────────────────────────────────────────────────
-app.get('/api/projects', protect, async (req, res) => {
-  try {
-    const projects = await prisma.project.findMany({ where: { userId: req.user.userId }, orderBy: { createdAt: 'desc' } })
-    return res.json({ projects })
-  } catch (err) {
-    return res.status(500).json({ message: 'Failed to fetch projects.' })
-  }
-})
-
-app.post('/api/projects', protect, async (req, res) => {
-  try {
-    const { name, location, budget, notes } = req.body
-    if (!name) return res.status(400).json({ message: 'Project name required.' })
-    const project = await prisma.project.create({ data: { name, location, budget, notes, userId: req.user.userId } })
-    return res.status(201).json({ project })
-  } catch (err) {
-    return res.status(500).json({ message: 'Failed to create project.' })
-  }
-})
-
-// ─── PRODUCTS ─────────────────────────────────────────────────────────────────
-app.get('/api/products', async (req, res) => {
-  try {
-    const products = await prisma.product.findMany({ orderBy: { createdAt: 'desc' } })
-    return res.json({ products })
-  } catch (err) {
-    return res.status(500).json({ message: 'Failed to fetch products.' })
-  }
-})
-
-app.post('/api/products', protect, async (req, res) => {
+// ─── SUPPLIERS ────────────────────────────────────────────────────────────────
+app.post('/api/suppliers/documents', protect, async (req, res) => {
   try {
     if (req.user.role !== 'SUPPLIER') return res.status(403).json({ message: 'Suppliers only.' })
-    const { name, material, price, description } = req.body
-    if (!name || !material) return res.status(400).json({ message: 'name and material required.' })
-    const product = await prisma.product.create({ data: { name, material, price, description, userId: req.user.userId } })
-    return res.status(201).json({ product })
-  } catch (err) {
-    return res.status(500).json({ message: 'Failed to create product.' })
-  }
-})
-
-// ─── PAYMENTS ─────────────────────────────────────────────────────────────────
-app.post('/api/payments/create-session', protect, async (req, res) => {
-  try {
-    const priceId = req.body.priceId || process.env.STRIPE_PRICE_ID
-    const user = await prisma.user.findUnique({ where: { id: req.user.userId } })
-    if (!user) return res.status(404).json({ message: 'User not found.' })
-    let customerId = user.stripeCustomerId
-    if (!customerId) {
-      const customer = await stripe.customers.create({ email: user.email, metadata: { userId: user.id } })
-      customerId = customer.id
-      await prisma.user.update({ where: { id: user.id }, data: { stripeCustomerId: customerId } })
+    const { documentType, documentUrl, documentName, expiryDate } = req.body
+    const supplier = PROFILES_SUPPLIER.find(p => p.userId === req.user.userId)
+    if (!supplier) return res.status(404).json({ message: 'Supplier profile not found.' })
+    
+    const doc = {
+      id: Math.random().toString(36).substr(2, 9),
+      supplierId: supplier.id,
+      documentType, documentUrl, documentName,
+      expiryDate: expiryDate ? new Date(expiryDate) : null,
+      uploadedAt: new Date()
     }
-    const session = await stripe.checkout.sessions.create({
-      customer: customerId,
-      payment_method_types: ['card'],
-      mode: 'subscription',
-      line_items: [{ price: priceId, quantity: 1 }],
-      success_url: `${process.env.CLIENT_URL}?payment=success`,
-      cancel_url: `${process.env.CLIENT_URL}?payment=cancelled`,
-      metadata: { userId: user.id },
-    })
-    return res.json({ url: session.url, sessionId: session.id })
+    DOCUMENTS.push(doc)
+    return res.status(201).json({ document: doc })
   } catch (err) {
-    return res.status(500).json({ message: 'Checkout failed: ' + err.message })
+    return res.status(500).json({ message: 'Failed to upload document.' })
   }
 })
 
-app.post('/api/payments/webhook', async (req, res) => {
-  const sig = req.headers['stripe-signature']
-  let event
-  try {
-    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET)
-  } catch (err) {
-    return res.status(400).json({ message: 'Webhook error: ' + err.message })
-  }
-  if (event.type === 'checkout.session.completed') {
-    const userId = event.data.object.metadata?.userId
-    if (userId) await prisma.user.update({ where: { id: userId }, data: { subscriptionStatus: 'ACTIVE' } })
-  }
-  return res.json({ received: true })
+// ─── ADMIN ────────────────────────────────────────────────────────────────────
+app.get('/api/admin/suppliers', protectAdmin, async (req, res) => {
+  return res.json({ suppliers: PROFILES_SUPPLIER })
 })
 
-app.get('/api/payments/status', protect, async (req, res) => {
-  try {
-    const user = await prisma.user.findUnique({ where: { id: req.user.userId }, select: { subscriptionStatus: true } })
-    return res.json({ subscriptionStatus: user.subscriptionStatus, isPremium: user.subscriptionStatus === 'ACTIVE' })
-  } catch (err) {
-    return res.status(500).json({ message: 'Failed.' })
-  }
+app.patch('/api/admin/suppliers/:id/verify', protectAdmin, async (req, res) => {
+  const { status } = req.body
+  const supplier = PROFILES_SUPPLIER.find(p => p.id === req.params.id)
+  if (!supplier) return res.status(404).json({ message: 'Supplier not found.' })
+  supplier.verificationStatus = status
+  return res.json({ supplier })
 })
 
-// ─── 404 ──────────────────────────────────────────────────────────────────────
-app.use((req, res) => res.status(404).json({ message: 'Route not found.' }))
-
-// ─── START ────────────────────────────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`✅ CladWise server running on port ${PORT}`)
-  checkExpiredLicences()
-})                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`))
