@@ -2,7 +2,7 @@
 nixPkgs = ["nodejs_20"]
 
 [phases.install]
-cmds = ["npm install", "npx prisma generate --schema=schema.prisma"]
+cmds = ["npm install"]
 
 [start]
 cmd = "node app.js"
