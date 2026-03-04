@@ -2,7 +2,7 @@
 nixPkgs = ["nodejs_20"]
 
 [phases.install]
-cmds = ["npm install"]
+cmd = ["npm install"]
 
 [start]
 cmd = "node app.js"
