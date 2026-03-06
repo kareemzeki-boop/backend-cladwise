@@ -272,6 +272,23 @@ app.get('/api/payments/status', protect, async (req, res) => {
 })
 
 
+
+// ─── TEMP UPGRADE ROUTE ───────────────────────────────────────────────────────
+app.get('/api/admin/upgrade/:secret/:email', async (req, res) => {
+  try {
+    if (req.params.secret !== 'cladwise2025admin') return res.status(403).json({ message: 'Forbidden' })
+    const { rows } = await db.query(
+      "UPDATE users SET subscription_status='ACTIVE' WHERE email=$1 RETURNING id, email, subscription_status",
+      [req.params.email]
+    )
+    if (!rows[0]) return res.status(404).json({ message: 'User not found — have you registered?' })
+    return res.json({ success: true, message: '✅ Account upgraded to ACTIVE', user: rows[0] })
+  } catch (err) {
+    return res.status(500).json({ message: err.message })
+  }
+})
+
+
 // ─── TEMP ADMIN UPGRADE (remove after testing) ────────────────────────────────
 app.post('/api/admin/force-premium', async (req, res) => {
   try {
