@@ -271,6 +271,110 @@ app.get('/api/payments/status', protect, async (req, res) => {
   }
 })
 
+// ─── AI PROJECT SPEC ANALYSER ─────────────────────────────────────────────────
+app.post('/api/ai/spec-analyser', protect, async (req, res) => {
+  try {
+    // Must be premium
+    const { rows } = await db.query('SELECT subscription_status FROM users WHERE id=$1', [req.user.userId])
+    if (rows[0]?.subscription_status !== 'ACTIVE') {
+      return res.status(402).json({ message: 'Premium subscription required.', paywall: true })
+    }
+
+    const { projectType, location, height, budget, programme, brief, file } = req.body
+
+    const systemPrompt = `You are CladWise UAE's Senior Material Specification Engineer. You produce professional, precise, actionable facade cladding recommendations for UAE construction projects.
+
+Your recommendations must cite specific UAE codes, real 2025 UAE market pricing, and practical supplier/procurement guidance.
+
+MARKET PRICING DATA (UAE 2025 — AED/m² supply only):
+- GFRC: AED 350–900/m² (entry to premium custom)
+- GFRP: AED 280–750/m² 
+- Aluminum (solid/cassette): AED 220–600/m²
+- Natural Stone: AED 600–1,800/m²
+- ACM-FR: AED 180–420/m²
+
+Installation (labour + fixing): add AED 80–250/m² depending on complexity
+Total installed cost = supply + installation + overhead (~15%)
+
+OUTPUT STRUCTURE — always use exactly this format:
+
+## Executive Summary
+Brief 2-3 sentence overview of recommendation and key reasoning.
+
+## Primary Recommendation
+**Material:** [Name]
+**Compliance Status:** PASS ✅ / CONDITIONAL ⚠️
+**Primary Reference:** [UAE code citation]
+**Why This Material:** Detailed justification tied to project parameters
+
+## Cost Breakdown
+**Supply Cost:** AED X–Y /m²
+**Installation:** AED X–Y /m²  
+**Total Installed (estimated):** AED X–Y /m²
+**For [project facade area if mentioned] m²:** AED X–Y total
+**Lead Time:** X–Y weeks from order
+
+## UAE Compliance & Approvals
+- Fire rating requirement vs material capability
+- Civil Defense (DCD/ADCD) requirements
+- DCL or QCC testing/certification needed
+- ECAS certification status
+- Al Sa'fat / Estidama requirements if applicable
+
+## Alternative Options
+**Option 2:** [Material] — brief justification, cost range
+**Option 3:** [Material] — brief justification, cost range
+
+## Key Risks & Watch Points
+Bullet list of project-specific risks and mitigation
+
+## Next Steps
+Practical numbered action list for the specifier
+
+Be precise, professional, and commercially useful. Use actual code references.`
+
+    const userMessage = `PROJECT BRIEF FOR ANALYSIS:
+- Type: ${projectType}
+- Location: ${location}
+- Height: ${height}
+- Budget: ${budget}
+- Programme: ${programme || 'Not specified'}
+- Brief: ${brief || 'No additional brief provided'}
+${file ? `\nProject document "${file.name}" has been uploaded — incorporate any relevant details.` : ''}`
+
+    const messages = [{ role: 'user', content: userMessage }]
+
+    // If file provided, add as document
+    if (file?.data) {
+      messages[0].content = [
+        { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: file.data } },
+        { type: 'text', text: userMessage }
+      ]
+    }
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 2000,
+        system: systemPrompt,
+        messages
+      })
+    })
+
+    const data = await response.json()
+    const report = data.content?.[0]?.text || 'Could not generate report.'
+    return res.json({ report })
+  } catch (err) {
+    return res.status(500).json({ message: 'Analyser error: ' + err.message })
+  }
+})
+
 // ─── AI SPECS ADVISOR ─────────────────────────────────────────────────────────
 const SPECS_SYSTEM = `You are the Lead Technical Specifications Advisor for CladWise UAE, a UAE-based construction platform. Act as a "Digital Rulebook" for facade cladding material specification and compliance.
 
