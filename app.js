@@ -271,6 +271,90 @@ app.get('/api/payments/status', protect, async (req, res) => {
   }
 })
 
+// ─── AI SPECS ADVISOR ─────────────────────────────────────────────────────────
+const SPECS_SYSTEM = `You are the Lead Technical Specifications Advisor for CladWise UAE, a UAE-based construction platform. Act as a "Digital Rulebook" for facade cladding material specification and compliance.
+
+KNOWLEDGE BASE HIERARCHY:
+1. UAE Federal Laws: UAE Fire and Life Safety Code of Practice, MoIAT ECAS certification
+2. Dubai: Dubai Building Code (DBC 2021), Al Sa'fat Green Building System, DEWA, DM, DCL (Dubai Central Laboratory)
+3. Abu Dhabi: Estidama Pearl Rating, ADM Specs, ADSSC, QCC, ADCD (Abu Dhabi Civil Defense)
+4. Sharjah: SEWA and Sharjah Municipality
+5. International: ISO, ASTM, BS EN, DIN (where local codes reference them)
+
+KEY AUTHORITIES:
+- MoIAT: UAE Federal product conformity and ECAS certification
+- DCL (Dubai Central Lab): Testing/certification for Dubai materials
+- QCC (Abu Dhabi Quality & Conformity): Product certification for Abu Dhabi
+- Civil Defense (DCD/ADCD): Mandatory for cladding, insulation, fire-related specs
+
+MATERIALS: GFRC, GFRP, Aluminum/ACM-FR, Natural Stone, ACM-FR
+
+ALWAYS structure responses exactly as:
+**Compliance Status:** PASS ✅ / FAIL ❌ / CONDITIONAL ⚠️ / MORE INFO NEEDED ℹ️
+**Primary Reference:** [Specific code, year, part, section]
+**Technical Requirement:** [Specific values — fire rating, U-value, thickness, test standard]
+**Local Nuance:** [Jurisdiction-specific note, approval body, special requirement]
+**Recommendation:** [Clear action for the specifier]
+
+Be precise, cite specific standards, flag when Civil Defense or DCL/QCC testing is mandatory.`
+
+// Free usage tracking (by IP — simple, no DB needed)
+const freeUsage = new Map()
+
+app.post('/api/ai/specs', async (req, res) => {
+  try {
+    const { messages, jurisdiction } = req.body
+    if (!messages || !Array.isArray(messages)) return res.status(400).json({ message: 'messages array required.' })
+
+    // Check if user is premium
+    let isPremium = false
+    const authHeader = req.headers.authorization
+    if (authHeader?.startsWith('Bearer ')) {
+      try {
+        const token = authHeader.split(' ')[1]
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'cladwise_secret_2025')
+        const { rows } = await db.query('SELECT subscription_status FROM users WHERE id=$1', [decoded.userId])
+        if (rows[0]?.subscription_status === 'ACTIVE') isPremium = true
+      } catch (e) {}
+    }
+
+    // Free limit check (by IP)
+    if (!isPremium) {
+      const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown'
+      const used = freeUsage.get(ip) || 0
+      if (used >= 2) {
+        return res.status(402).json({ message: 'Free limit reached. Please upgrade to continue.', paywall: true })
+      }
+      freeUsage.set(ip, used + 1)
+    }
+
+    // Proxy to Anthropic
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        system: SPECS_SYSTEM,
+        messages: messages.map(m => ({
+          role: m.role,
+          content: m.role === 'user' ? `[Jurisdiction: ${jurisdiction || 'Dubai (DBC)'}]\n\n${m.content}` : m.content
+        }))
+      })
+    })
+
+    const data = await response.json()
+    const reply = data.content?.[0]?.text || 'Could not process request.'
+    return res.json({ reply, isPremium })
+  } catch (err) {
+    return res.status(500).json({ message: 'AI service error: ' + err.message })
+  }
+})
+
 // ─── 404 ──────────────────────────────────────────────────────────────────────
 app.use((req, res) => res.status(404).json({ message: 'Route not found.' }))
 
