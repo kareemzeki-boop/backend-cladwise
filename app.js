@@ -271,6 +271,23 @@ app.get('/api/payments/status', protect, async (req, res) => {
   }
 })
 
+
+// ─── TEMP ADMIN UPGRADE (remove after testing) ────────────────────────────────
+app.post('/api/admin/force-premium', async (req, res) => {
+  try {
+    const { email, secret } = req.body
+    if (secret !== 'cladwise_admin_2025') return res.status(403).json({ message: 'Forbidden' })
+    const { rows } = await db.query(
+      "UPDATE users SET subscription_status='ACTIVE' WHERE email=$1 RETURNING id, email, subscription_status",
+      [email]
+    )
+    if (!rows[0]) return res.status(404).json({ message: 'User not found' })
+    return res.json({ message: 'User upgraded to ACTIVE', user: rows[0] })
+  } catch (err) {
+    return res.status(500).json({ message: err.message })
+  }
+})
+
 // ─── AI PROJECT SPEC ANALYSER ─────────────────────────────────────────────────
 app.post('/api/ai/spec-analyser', protect, async (req, res) => {
   try {
