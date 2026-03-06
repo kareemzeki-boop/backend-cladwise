@@ -164,7 +164,7 @@ app.get('/api/users/me', protect, async (req, res) => {
       const { rows } = await db.query('SELECT * FROM profiles_supplier WHERE user_id=$1', [user.id])
       profile = rows[0] || null
     }
-    return res.json({ user, profile })
+    return res.json({ user: { ...user, subscriptionStatus: user.subscription_status, isPremium: user.subscription_status === 'ACTIVE' }, profile, isPremium: user.subscription_status === 'ACTIVE' })
   } catch (err) {
     return res.status(500).json({ message: 'Failed to fetch user.' })
   }
