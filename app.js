@@ -409,6 +409,46 @@ ${file ? `\nProject document "${file.name}" has been uploaded — incorporate an
   }
 })
 
+// ─── SUPPLIER TRIAL APPLICATION ───────────────────────────────────────────────
+app.post('/api/suppliers/apply', async (req, res) => {
+  try {
+    const app = req.body
+    if (!app?.company?.name || !app?.contact?.email) {
+      return res.status(400).json({ message: 'Company name and contact email are required.' })
+    }
+
+    // Store application in DB
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS supplier_applications (
+        id SERIAL PRIMARY KEY,
+        company_name TEXT NOT NULL,
+        contact_email TEXT NOT NULL,
+        contact_name TEXT,
+        data JSONB NOT NULL,
+        status TEXT DEFAULT 'pending',
+        trial_start TIMESTAMPTZ DEFAULT NOW(),
+        trial_end TIMESTAMPTZ DEFAULT NOW() + INTERVAL '30 days',
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `)
+
+    await db.query(
+      `INSERT INTO supplier_applications (company_name, contact_email, contact_name, data)
+       VALUES ($1, $2, $3, $4)`,
+      [app.company.name, app.contact.email, app.contact.name, JSON.stringify(app)]
+    )
+
+    return res.json({
+      success: true,
+      message: 'Application received. Our team will review within 2 business days.',
+      trialEnd: app.trialEndDate
+    })
+  } catch (err) {
+    console.error('Supplier apply error:', err.message)
+    return res.status(500).json({ message: 'Application error: ' + err.message })
+  }
+})
+
 // ─── AI DRAWING ANALYSIS ──────────────────────────────────────────────────────
 // Accepts a base64-encoded PDF or image, returns extracted facade dimensions.
 // No auth required — same open access as /api/ai/specs.
