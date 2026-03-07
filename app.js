@@ -409,6 +409,75 @@ ${file ? `\nProject document "${file.name}" has been uploaded — incorporate an
   }
 })
 
+// ─── AI DRAWING ANALYSIS ──────────────────────────────────────────────────────
+// Accepts a base64-encoded PDF or image, returns extracted facade dimensions.
+// No auth required — same open access as /api/ai/specs.
+app.post('/api/ai/drawing-analysis', async (req, res) => {
+  try {
+    const { data, mediaType, filename } = req.body
+    if (!data || !mediaType) {
+      return res.status(400).json({ message: 'data and mediaType are required.' })
+    }
+
+    const isPDF = mediaType === 'application/pdf'
+    const contentBlock = isPDF
+      ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data } }
+      : { type: 'image',    source: { type: 'base64', media_type: mediaType, data } }
+
+    const prompt = `You are a UAE facade cost estimation assistant. Analyse this architectural drawing or document and extract facade specification data.
+
+Return ONLY a JSON object (no markdown, no explanation, no code fences) with exactly these fields:
+{
+  "area_m2": <number — total facade cladding area in m², your best estimate>,
+  "height_category": <one of: "low" | "mid" | "high" | "tall" | "stall">,
+  "complexity": <one of: "simple" | "medium" | "complex">,
+  "confidence": <"high" | "medium" | "low">,
+  "notes": "<one concise sentence explaining what you found and any assumptions made>"
+}
+
+Height categories: low = under 15m, mid = 15–30m, high = 30–60m, tall = 60–150m, stall = 150m+
+Complexity: simple = flat rectilinear panels, medium = some articulation, complex = curves/3D/parametric
+
+If you cannot read the drawing clearly, make a reasonable assumption and note it. Always return valid JSON.`
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'pdfs-2024-09-25'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 500,
+        messages: [{ role: 'user', content: [contentBlock, { type: 'text', text: prompt }] }]
+      })
+    })
+
+    if (!response.ok) {
+      const err = await response.text()
+      return res.status(500).json({ message: 'Anthropic API error: ' + err })
+    }
+
+    const aiData = await response.json()
+    const rawText = (aiData.content || []).filter(b => b.type === 'text').map(b => b.text).join('')
+
+    // Strip any accidental markdown fences
+    const clean = rawText.replace(/```json|```/g, '').trim()
+    let parsed
+    try {
+      parsed = JSON.parse(clean)
+    } catch (e) {
+      return res.status(500).json({ message: 'AI returned non-JSON response: ' + rawText.slice(0, 200) })
+    }
+
+    return res.json(parsed)
+  } catch (err) {
+    return res.status(500).json({ message: 'Drawing analysis error: ' + err.message })
+  }
+})
+
 // ─── AI SPECS ADVISOR ─────────────────────────────────────────────────────────
 const SPECS_SYSTEM = `You are the Lead Technical Specifications Advisor for CladWise UAE, a UAE-based construction platform. Act as a "Digital Rulebook" for facade cladding material specification and compliance.
 
