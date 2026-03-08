@@ -410,14 +410,31 @@ ${file ? `\nProject document "${file.name}" has been uploaded — incorporate an
 })
 
 // ─── SUPPLIER TRIAL APPLICATION ───────────────────────────────────────────────
+// ─── EMAIL HELPER (Resend) ────────────────────────────────────────────────────
+async function sendEmail({ to, subject, html }) {
+  const key = process.env.RESEND_API_KEY
+  if (!key) { console.warn('⚠ RESEND_API_KEY not set — skipping email'); return }
+  try {
+    const r = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: 'CladWise UAE <notifications@cladwise.ae>', to, subject, html })
+    })
+    const data = await r.json()
+    if (!r.ok) console.error('Resend error:', data)
+    else console.log('✅ Email sent to', to)
+  } catch (e) { console.error('Email send failed:', e.message) }
+}
+
+// ─── SUPPLIER APPLICATION ─────────────────────────────────────────────────────
 app.post('/api/suppliers/apply', async (req, res) => {
   try {
-    const app = req.body
-    if (!app?.company?.name || !app?.contact?.email) {
+    const payload = req.body
+    if (!payload?.company?.name || !payload?.contact?.email) {
       return res.status(400).json({ message: 'Company name and contact email are required.' })
     }
 
-    // Store application in DB
+    // Ensure table has all needed columns
     await db.query(`
       CREATE TABLE IF NOT EXISTS supplier_applications (
         id SERIAL PRIMARY KEY,
@@ -426,26 +443,179 @@ app.post('/api/suppliers/apply', async (req, res) => {
         contact_name TEXT,
         data JSONB NOT NULL,
         status TEXT DEFAULT 'pending',
-        trial_start TIMESTAMPTZ DEFAULT NOW(),
-        trial_end TIMESTAMPTZ DEFAULT NOW() + INTERVAL '30 days',
+        review_note TEXT,
+        reviewed_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ DEFAULT NOW()
       )
     `)
+    // Add review columns if table pre-existed without them
+    await db.query(`ALTER TABLE supplier_applications ADD COLUMN IF NOT EXISTS review_note TEXT`).catch(() => {})
+    await db.query(`ALTER TABLE supplier_applications ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ`).catch(() => {})
 
-    await db.query(
+    const { rows } = await db.query(
       `INSERT INTO supplier_applications (company_name, contact_email, contact_name, data)
-       VALUES ($1, $2, $3, $4)`,
-      [app.company.name, app.contact.email, app.contact.name, JSON.stringify(app)]
+       VALUES ($1, $2, $3, $4) RETURNING id`,
+      [payload.company.name, payload.contact.email, payload.contact.name, JSON.stringify(payload)]
     )
+    const appId = rows[0].id
 
-    return res.json({
-      success: true,
-      message: 'Application received. Our team will review within 2 business days.',
-      trialEnd: app.trialEndDate
+    // ── Notify Kareem ─────────────────────────────────────────────────────────
+    const d = payload
+    const mats = d.materials?.live?.join(', ') || '—'
+    const svcs = d.materials?.services?.join(', ') || '—'
+    const emirates = d.materials?.emirates?.join(', ') || '—'
+    await sendEmail({
+      to: 'kareemzeki@hotmail.com',
+      subject: `🏗️ New Founding Supplier Application — ${d.company.name} (#${appId})`,
+      html: `
+        <div style="font-family:Arial,sans-serif;max-width:600px;background:#0b110d;color:#e8f0ea;padding:32px;border-radius:8px">
+          <div style="color:#00e5a0;font-size:22px;font-weight:900;margin-bottom:4px">CladWise UAE</div>
+          <div style="color:#888;font-size:11px;margin-bottom:24px;letter-spacing:2px">NEW FOUNDING SUPPLIER APPLICATION</div>
+          
+          <div style="background:#111a13;border:1px solid rgba(0,229,160,0.2);border-left:3px solid #00e5a0;padding:20px;border-radius:4px;margin-bottom:20px">
+            <div style="font-size:20px;font-weight:bold;color:#fff">${d.company.name}</div>
+            <div style="color:#888;font-size:12px">Application #${appId} · ${new Date().toLocaleString('en-AE', {timeZone:'Asia/Dubai'})}</div>
+          </div>
+
+          <table style="width:100%;border-collapse:collapse;font-size:13px">
+            <tr><td style="padding:8px 0;color:#888;width:40%">Trade Licence</td><td style="color:#e8f0ea">${d.company.licenseNum || '—'} (${d.company.licenseEmirate || '—'})</td></tr>
+            <tr><td style="padding:8px 0;color:#888">Established</td><td style="color:#e8f0ea">${d.company.established || '—'}</td></tr>
+            <tr><td style="padding:8px 0;color:#888">Turnover</td><td style="color:#e8f0ea">${d.company.turnover || '—'}</td></tr>
+            <tr><td style="padding:8px 0;color:#888">Website</td><td style="color:#e8f0ea">${d.company.website || '—'}</td></tr>
+            <tr><td style="padding:8px 0;color:#888">Materials</td><td style="color:#00e5a0">${mats}</td></tr>
+            <tr><td style="padding:8px 0;color:#888">Services</td><td style="color:#e8f0ea">${svcs}</td></tr>
+            <tr><td style="padding:8px 0;color:#888">Emirates</td><td style="color:#e8f0ea">${emirates}</td></tr>
+            <tr><td style="padding:8px 0;color:#888;border-top:1px solid #1a2a1f">Contact Name</td><td style="color:#e8f0ea;border-top:1px solid #1a2a1f">${d.contact.name || '—'} · ${d.contact.title || '—'}</td></tr>
+            <tr><td style="padding:8px 0;color:#888">Contact Email</td><td style="color:#e8f0ea">${d.contact.email}</td></tr>
+            <tr><td style="padding:8px 0;color:#888">Contact Phone</td><td style="color:#e8f0ea">${d.contact.phone || '—'}</td></tr>
+            <tr><td style="padding:8px 0;color:#888">Address</td><td style="color:#e8f0ea">${d.contact.address || '—'}</td></tr>
+          </table>
+
+          ${d.company.tagline ? `<div style="margin-top:16px;padding:12px 16px;background:#0d1a0f;border-radius:4px;font-style:italic;color:#aaa;font-size:12px">"${d.company.tagline}"</div>` : ''}
+
+          <div style="margin-top:24px;text-align:center">
+            <a href="https://kareemzeki-boop.github.io/Frotned/admin.html" style="background:#00e5a0;color:#000;padding:12px 28px;border-radius:6px;text-decoration:none;font-weight:bold;font-size:13px">Open Admin Panel →</a>
+          </div>
+        </div>`
     })
+
+    // ── Confirm to applicant ───────────────────────────────────────────────────
+    await sendEmail({
+      to: d.contact.email,
+      subject: `Your CladWise UAE Founding Supplier Application — ${d.company.name}`,
+      html: `
+        <div style="font-family:Arial,sans-serif;max-width:600px;background:#0b110d;color:#e8f0ea;padding:32px;border-radius:8px">
+          <div style="color:#00e5a0;font-size:22px;font-weight:900;margin-bottom:24px">CladWise UAE</div>
+          <h2 style="font-size:24px;margin-bottom:8px">Application Received ✓</h2>
+          <p style="color:#888;line-height:1.7">Dear ${d.contact.name || 'Supplier'},<br><br>
+          We have received the founding supplier application for <strong style="color:#fff">${d.company.name}</strong>.<br><br>
+          Our team will review your trade licence and details within <strong style="color:#00e5a0">2 business days</strong>. 
+          We may reach out to request additional documents if needed.<br><br>
+          Once approved, your listing will go live on CladWise UAE with the <strong style="color:#00e5a0">✓ Verified</strong> badge — 
+          permanently listed as a founding supplier, visible to every architect and specifier on the platform.</p>
+
+          <div style="background:#111a13;border:1px solid rgba(0,229,160,0.2);padding:16px 20px;border-radius:4px;margin:24px 0">
+            <div style="color:#888;font-size:11px;letter-spacing:2px;margin-bottom:8px">YOUR APPLICATION REFERENCE</div>
+            <div style="font-size:20px;font-weight:bold;color:#00e5a0">#${appId}</div>
+          </div>
+
+          <p style="color:#888;font-size:12px;line-height:1.6">
+            Questions? Reply to this email or contact us at <a href="mailto:kareemzeki@hotmail.com" style="color:#00e5a0">kareemzeki@hotmail.com</a><br>
+            CladWise UAE · UAE Façade Specification Platform
+          </p>
+        </div>`
+    })
+
+    return res.json({ success: true, id: appId, message: 'Application received. Our team will review within 2 business days.' })
   } catch (err) {
     console.error('Supplier apply error:', err.message)
     return res.status(500).json({ message: 'Application error: ' + err.message })
+  }
+})
+
+// ─── ADMIN: LIST ALL APPLICATIONS ────────────────────────────────────────────
+app.get('/api/admin/applications', async (req, res) => {
+  const secret = req.headers['x-admin-secret']
+  if (secret !== 'cladwise2025admin') return res.status(403).json({ message: 'Forbidden' })
+  try {
+    const { rows } = await db.query(
+      `SELECT id, company_name, contact_email, contact_name, status, review_note, reviewed_at, created_at, data
+       FROM supplier_applications ORDER BY created_at DESC`
+    )
+    return res.json({ applications: rows })
+  } catch (err) {
+    return res.status(500).json({ message: err.message })
+  }
+})
+
+// ─── ADMIN: APPROVE APPLICATION ───────────────────────────────────────────────
+app.patch('/api/admin/applications/:id/approve', async (req, res) => {
+  const secret = req.headers['x-admin-secret']
+  if (secret !== 'cladwise2025admin') return res.status(403).json({ message: 'Forbidden' })
+  try {
+    const { note } = req.body
+    const { rows } = await db.query(
+      `UPDATE supplier_applications SET status='approved', review_note=$1, reviewed_at=NOW()
+       WHERE id=$2 RETURNING *`,
+      [note || '', req.params.id]
+    )
+    if (!rows[0]) return res.status(404).json({ message: 'Application not found' })
+    const a = rows[0]
+    const d = a.data
+    await sendEmail({
+      to: a.contact_email,
+      subject: `✓ Approved — Your CladWise UAE Listing is Live`,
+      html: `
+        <div style="font-family:Arial,sans-serif;max-width:600px;background:#0b110d;color:#e8f0ea;padding:32px;border-radius:8px">
+          <div style="color:#00e5a0;font-size:22px;font-weight:900;margin-bottom:24px">CladWise UAE</div>
+          <div style="color:#00e5a0;font-size:32px;font-weight:900;margin-bottom:8px">You're Live ✓</div>
+          <p style="color:#888;line-height:1.7">Dear ${d?.contact?.name || a.contact_name || 'Supplier'},<br><br>
+          Your founding supplier listing for <strong style="color:#fff">${a.company_name}</strong> has been <strong style="color:#00e5a0">approved and is now live</strong> on CladWise UAE.<br><br>
+          Your profile carries the <strong style="color:#00e5a0">✓ Verified</strong> badge and is visible to every architect and specifier using the platform.
+          ${note ? `<br><br><em style="color:#aaa">${note}</em>` : ''}</p>
+          <div style="margin-top:24px;text-align:center">
+            <a href="https://kareemzeki-boop.github.io/Frotned/#suppliers" style="background:#00e5a0;color:#000;padding:12px 28px;border-radius:6px;text-decoration:none;font-weight:bold;font-size:13px">View Your Listing →</a>
+          </div>
+        </div>`
+    })
+    return res.json({ success: true })
+  } catch (err) {
+    return res.status(500).json({ message: err.message })
+  }
+})
+
+// ─── ADMIN: REJECT APPLICATION ────────────────────────────────────────────────
+app.patch('/api/admin/applications/:id/reject', async (req, res) => {
+  const secret = req.headers['x-admin-secret']
+  if (secret !== 'cladwise2025admin') return res.status(403).json({ message: 'Forbidden' })
+  try {
+    const { note } = req.body
+    const { rows } = await db.query(
+      `UPDATE supplier_applications SET status='rejected', review_note=$1, reviewed_at=NOW()
+       WHERE id=$2 RETURNING *`,
+      [note || '', req.params.id]
+    )
+    if (!rows[0]) return res.status(404).json({ message: 'Application not found' })
+    const a = rows[0]
+    const d = a.data
+    await sendEmail({
+      to: a.contact_email,
+      subject: `CladWise UAE — Supplier Application Update`,
+      html: `
+        <div style="font-family:Arial,sans-serif;max-width:600px;background:#0b110d;color:#e8f0ea;padding:32px;border-radius:8px">
+          <div style="color:#00e5a0;font-size:22px;font-weight:900;margin-bottom:24px">CladWise UAE</div>
+          <h2 style="font-size:22px;margin-bottom:8px">Application Update</h2>
+          <p style="color:#888;line-height:1.7">Dear ${d?.contact?.name || a.contact_name || 'Supplier'},<br><br>
+          Thank you for applying to list <strong style="color:#fff">${a.company_name}</strong> on CladWise UAE.<br><br>
+          After review, we are unable to approve your application at this time.
+          ${note ? `<br><br><strong style="color:#fff">Reason:</strong> <em style="color:#aaa">${note}</em>` : ''}<br><br>
+          If you believe this is an error or wish to provide additional documents, please reply to this email.</p>
+          <p style="color:#555;font-size:12px;margin-top:24px">CladWise UAE · UAE Façade Specification Platform</p>
+        </div>`
+    })
+    return res.json({ success: true })
+  } catch (err) {
+    return res.status(500).json({ message: err.message })
   }
 })
 
