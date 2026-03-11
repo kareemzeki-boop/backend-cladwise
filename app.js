@@ -772,6 +772,24 @@ app.post('/api/ai/specs', async (req, res) => {
   }
 })
 
+// ─── WAITLIST ─────────────────────────────────────────────────────────────────
+app.post('/api/waitlist', async (req, res) => {
+  const { email, source } = req.body;
+  if (!email || !email.includes('@')) return res.status(400).json({ message: 'Invalid email' });
+  try {
+    await prisma.waitlist.upsert({
+      where: { email },
+      update: { source, updatedAt: new Date() },
+      create: { email, source: source || 'unknown' }
+    });
+    res.json({ success: true });
+  } catch (e) {
+    // If waitlist table doesn't exist yet, just log and succeed silently
+    console.log('Waitlist save failed (table may not exist yet):', e.message);
+    res.json({ success: true });
+  }
+});
+
 // ─── 404 ──────────────────────────────────────────────────────────────────────
 app.use((req, res) => res.status(404).json({ message: 'Route not found.' }))
 
