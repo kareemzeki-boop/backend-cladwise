@@ -494,7 +494,7 @@ app.post('/api/suppliers/apply', async (req, res) => {
           ${d.company.tagline ? `<div style="margin-top:16px;padding:12px 16px;background:#0d1a0f;border-radius:4px;font-style:italic;color:#aaa;font-size:12px">"${d.company.tagline}"</div>` : ''}
 
           <div style="margin-top:24px;text-align:center">
-            <a href="https://kareemzeki-boop.github.io/Frotned/admin.html" style="background:#00e5a0;color:#000;padding:12px 28px;border-radius:6px;text-decoration:none;font-weight:bold;font-size:13px">Open Admin Panel →</a>
+            <a href="https://cladwise.ae/admin.html" style="background:#00e5a0;color:#000;padding:12px 28px;border-radius:6px;text-decoration:none;font-weight:bold;font-size:13px">Open Admin Panel →</a>
           </div>
         </div>`
     })
@@ -574,7 +574,7 @@ app.patch('/api/admin/applications/:id/approve', async (req, res) => {
           Your profile carries the <strong style="color:#00e5a0">✓ Verified</strong> badge and is visible to every architect and specifier using the platform.
           ${note ? `<br><br><em style="color:#aaa">${note}</em>` : ''}</p>
           <div style="margin-top:24px;text-align:center">
-            <a href="https://kareemzeki-boop.github.io/Frotned/#suppliers" style="background:#00e5a0;color:#000;padding:12px 28px;border-radius:6px;text-decoration:none;font-weight:bold;font-size:13px">View Your Listing →</a>
+            <a href="https://cladwise.ae/#suppliers" style="background:#00e5a0;color:#000;padding:12px 28px;border-radius:6px;text-decoration:none;font-weight:bold;font-size:13px">View Your Listing →</a>
           </div>
         </div>`
     })
