@@ -122,6 +122,46 @@ app.post('/api/auth/register', async (req, res) => {
       )
     }
 
+    // Notify Kareem on supplier registration
+    if (role === 'SUPPLIER') {
+      const { shopName, category, taxId, tradeLicenceNumber, tradeLicenceEmirate } = profile
+      sendEmail({
+        to: 'kareem@cladwise.ae',
+        subject: `🏭 New Supplier Registration — ${shopName}`,
+        html: `
+          <div style="font-family:Arial,sans-serif;max-width:600px;background:#0b110d;color:#e8f0ea;padding:32px;border-radius:8px">
+            <div style="color:#00e5a0;font-size:22px;font-weight:900;margin-bottom:24px">CladWise UAE — Admin</div>
+            <h2 style="font-size:24px;margin-bottom:16px">New Supplier Account</h2>
+            <table style="width:100%;border-collapse:collapse;font-size:13px">
+              <tr><td style="padding:8px 0;color:#888;width:160px">Company</td><td style="color:#fff;font-weight:700">${shopName}</td></tr>
+              <tr><td style="padding:8px 0;color:#888">Email</td><td style="color:#e8f0ea">${email}</td></tr>
+              <tr><td style="padding:8px 0;color:#888">Category</td><td style="color:#e8f0ea">${category}</td></tr>
+              <tr><td style="padding:8px 0;color:#888">Tax ID</td><td style="color:#e8f0ea">${taxId}</td></tr>
+              <tr><td style="padding:8px 0;color:#888">Trade Licence</td><td style="color:#e8f0ea">${tradeLicenceNumber || '—'}</td></tr>
+              <tr><td style="padding:8px 0;color:#888">Emirate</td><td style="color:#e8f0ea">${tradeLicenceEmirate || '—'}</td></tr>
+            </table>
+            <div style="margin-top:28px;text-align:center">
+              <a href="https://cladwise.ae/admin.html" style="background:#00e5a0;color:#000;padding:12px 28px;border-radius:6px;text-decoration:none;font-weight:bold;font-size:13px">Review in Admin Panel →</a>
+            </div>
+          </div>`
+      })
+      // Send pending confirmation to supplier
+      sendEmail({
+        to: email,
+        subject: `CladWise UAE — Your account is under review`,
+        html: `
+          <div style="font-family:Arial,sans-serif;max-width:600px;background:#0b110d;color:#e8f0ea;padding:32px;border-radius:8px">
+            <div style="color:#00e5a0;font-size:22px;font-weight:900;margin-bottom:24px">CladWise UAE</div>
+            <h2 style="font-size:24px;margin-bottom:8px">Account Under Review</h2>
+            <p style="color:#888;line-height:1.7">Hi ${shopName},<br><br>
+            Thank you for registering on CladWise UAE. Your account has been created and is currently <strong style="color:#f59e0b">pending approval</strong> by our team.<br><br>
+            We manually review every supplier to maintain the quality of our directory. You will receive an email once your account is approved — usually within 24–48 hours.<br><br>
+            If you have any questions, reply to this email.</p>
+            <p style="color:#555;font-size:12px;margin-top:24px">CladWise UAE · UAE Façade Specification Platform</p>
+          </div>`
+      })
+    }
+
     const token = signToken(user.id, user.role)
     return res.status(201).json({ message: 'Account created.', token, user })
   } catch (err) {
@@ -212,6 +252,47 @@ app.patch('/api/admin/suppliers/:id/verify', protect, async (req, res) => {
       `UPDATE profiles_supplier SET verification_status=$1, verification_note=$2, verified_at=$3 WHERE id=$4`,
       [status, note || null, status === 'VERIFIED' ? new Date() : null, id]
     )
+    // Fetch supplier email for notification
+    const { rows } = await db.query(
+      `SELECT u.email, ps.shop_name FROM profiles_supplier ps JOIN users u ON u.id = ps.user_id WHERE ps.id=$1`,
+      [id]
+    )
+    if (rows[0]) {
+      const { email, shop_name } = rows[0]
+      if (status === 'VERIFIED') {
+        sendEmail({
+          to: email,
+          subject: `✓ Approved — Your CladWise UAE listing is live`,
+          html: `
+            <div style="font-family:Arial,sans-serif;max-width:600px;background:#0b110d;color:#e8f0ea;padding:32px;border-radius:8px">
+              <div style="color:#00e5a0;font-size:22px;font-weight:900;margin-bottom:24px">CladWise UAE</div>
+              <div style="color:#00e5a0;font-size:32px;font-weight:900;margin-bottom:8px">You're Approved ✓</div>
+              <p style="color:#888;line-height:1.7">Hi ${shop_name},<br><br>
+              Your supplier account on CladWise UAE has been <strong style="color:#00e5a0">approved and is now live</strong>.<br><br>
+              Architects and façade consultants across the UAE can now find your listing.
+              ${note ? `<br><br><em style="color:#aaa">${note}</em>` : ''}</p>
+              <div style="margin-top:28px;text-align:center">
+                <a href="https://cladwise.ae/#suppliers" style="background:#00e5a0;color:#000;padding:12px 28px;border-radius:6px;text-decoration:none;font-weight:bold;font-size:13px">View Your Listing →</a>
+              </div>
+            </div>`
+        })
+      } else {
+        sendEmail({
+          to: email,
+          subject: `CladWise UAE — Supplier Account Update`,
+          html: `
+            <div style="font-family:Arial,sans-serif;max-width:600px;background:#0b110d;color:#e8f0ea;padding:32px;border-radius:8px">
+              <div style="color:#00e5a0;font-size:22px;font-weight:900;margin-bottom:24px">CladWise UAE</div>
+              <h2 style="font-size:22px;margin-bottom:8px">Account Update</h2>
+              <p style="color:#888;line-height:1.7">Hi ${shop_name},<br><br>
+              Thank you for registering on CladWise UAE. After review, we are unable to approve your account at this time.
+              ${note ? `<br><br><strong style="color:#fff">Reason:</strong> <em style="color:#aaa">${note}</em>` : ''}<br><br>
+              If you believe this is an error or wish to provide additional information, please reply to this email.</p>
+              <p style="color:#555;font-size:12px;margin-top:24px">CladWise UAE · UAE Façade Specification Platform</p>
+            </div>`
+        })
+      }
+    }
     return res.json({ message: `Supplier ${status.toLowerCase()}.` })
   } catch (err) {
     return res.status(500).json({ message: 'Failed to update.' })
