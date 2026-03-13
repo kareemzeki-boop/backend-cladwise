@@ -615,6 +615,74 @@ app.post('/api/suppliers/apply', async (req, res) => {
 })
 
 // ─── ADMIN: LIST ALL APPLICATIONS ────────────────────────────────────────────
+// ─── ADMIN: REGISTERED ACCOUNTS ──────────────────────────────────────────────
+app.get('/api/admin/registrations', async (req, res) => {
+  if (req.headers['x-admin-secret'] !== 'cladwise2025admin') return res.status(403).json({ message: 'Forbidden' })
+  try {
+    const { rows } = await db.query(`
+      SELECT ps.id, ps.shop_name, ps.category, ps.tax_id,
+             ps.trade_licence_number, ps.trade_licence_emirate,
+             ps.verification_status, ps.verification_note, ps.verified_at, ps.created_at,
+             u.email, u.created_at as registered_at
+      FROM profiles_supplier ps
+      JOIN users u ON u.id = ps.user_id
+      ORDER BY ps.created_at DESC
+    `)
+    return res.json({ registrations: rows })
+  } catch (err) {
+    return res.status(500).json({ message: err.message })
+  }
+})
+
+app.patch('/api/admin/registrations/:id/verify', async (req, res) => {
+  if (req.headers['x-admin-secret'] !== 'cladwise2025admin') return res.status(403).json({ message: 'Forbidden' })
+  try {
+    const { id } = req.params
+    const { status, note } = req.body
+    if (!['VERIFIED', 'REJECTED'].includes(status)) return res.status(400).json({ message: 'Status must be VERIFIED or REJECTED.' })
+    await db.query(
+      `UPDATE profiles_supplier SET verification_status=$1, verification_note=$2, verified_at=$3 WHERE id=$4`,
+      [status, note || null, status === 'VERIFIED' ? new Date() : null, id]
+    )
+    const { rows } = await db.query(
+      `SELECT u.email, ps.shop_name FROM profiles_supplier ps JOIN users u ON u.id = ps.user_id WHERE ps.id=$1`, [id]
+    )
+    if (rows[0]) {
+      const { email, shop_name } = rows[0]
+      if (status === 'VERIFIED') {
+        sendEmail({
+          to: email,
+          subject: `✓ Approved — Your CladWise UAE account is live`,
+          html: `<div style="font-family:Arial,sans-serif;max-width:600px;background:#0b110d;color:#e8f0ea;padding:32px;border-radius:8px">
+            <div style="color:#00e5a0;font-size:22px;font-weight:900;margin-bottom:24px">CladWise UAE</div>
+            <div style="color:#00e5a0;font-size:32px;font-weight:900;margin-bottom:8px">You're Approved ✓</div>
+            <p style="color:#888;line-height:1.7">Hi ${shop_name},<br><br>
+            Your supplier account on CladWise UAE has been <strong style="color:#00e5a0">approved</strong>. You can now log in and access the full platform.
+            ${note ? `<br><br><em style="color:#aaa">${note}</em>` : ''}</p>
+            <div style="margin-top:28px;text-align:center">
+              <a href="https://cladwise.ae" style="background:#00e5a0;color:#000;padding:12px 28px;border-radius:6px;text-decoration:none;font-weight:bold;font-size:13px">Go to CladWise →</a>
+            </div></div>`
+        })
+      } else {
+        sendEmail({
+          to: email,
+          subject: `CladWise UAE — Account Registration Update`,
+          html: `<div style="font-family:Arial,sans-serif;max-width:600px;background:#0b110d;color:#e8f0ea;padding:32px;border-radius:8px">
+            <div style="color:#00e5a0;font-size:22px;font-weight:900;margin-bottom:24px">CladWise UAE</div>
+            <h2 style="font-size:22px;margin-bottom:8px">Account Update</h2>
+            <p style="color:#888;line-height:1.7">Hi ${shop_name},<br><br>
+            Thank you for registering on CladWise UAE. After review, we are unable to approve your account at this time.
+            ${note ? `<br><br><strong style="color:#fff">Reason:</strong> <em style="color:#aaa">${note}</em>` : ''}<br><br>
+            Please reply to this email if you have questions.</p></div>`
+        })
+      }
+    }
+    return res.json({ message: `Supplier ${status.toLowerCase()}.` })
+  } catch (err) {
+    return res.status(500).json({ message: err.message })
+  }
+})
+
 app.get('/api/admin/applications', async (req, res) => {
   const secret = req.headers['x-admin-secret']
   if (secret !== 'cladwise2025admin') return res.status(403).json({ message: 'Forbidden' })
