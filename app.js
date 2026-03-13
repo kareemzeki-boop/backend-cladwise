@@ -842,20 +842,6 @@ app.use((req, res) => res.status(404).json({ message: 'Route not found.' }))
 initDB().then(() => {
   app.listen(PORT, () => {
     console.log(`✅ CladWise running on port ${PORT}`)
-    // Keepalive: ping self every 10 min to prevent Railway free tier sleep
-    setInterval(() => {
-      const https = require('https')
-      const url = process.env.RAILWAY_PUBLIC_DOMAIN
-        ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/api/health`
-        : `http://localhost:${PORT}/api/health`
-      try {
-        const req = https.get(url, (res) => {
-          console.log(`keepalive ping: ${res.statusCode}`)
-        })
-        req.on('error', () => {})
-        req.end()
-      } catch(e) {}
-    }, 10 * 60 * 1000)
   })
 }).catch(err => {
   console.error('❌ DB init failed:', err.message)
