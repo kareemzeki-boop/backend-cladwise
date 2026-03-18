@@ -23,7 +23,7 @@ app.use(cors({
 }))
 
 app.use('/api/payments/webhook', express.raw({ type: 'application/json' }))
-app.use(express.json())
+app.use(express.json({limit:"50mb"}))
 
 // ─── DB INIT — create tables if they don't exist ──────────────────────────────
 async function initDB() {
