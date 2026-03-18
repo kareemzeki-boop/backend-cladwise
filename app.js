@@ -389,12 +389,6 @@ app.post('/api/admin/force-premium', async (req, res) => {
 // ─── AI PROJECT SPEC ANALYSER ─────────────────────────────────────────────────
 app.post('/api/ai/spec-analyser', protect, async (req, res) => {
   try {
-    // Must be premium
-    const { rows } = await db.query('SELECT subscription_status FROM users WHERE id=$1', [req.user.userId])
-    if (rows[0]?.subscription_status !== 'ACTIVE') {
-      return res.status(402).json({ message: 'Premium subscription required.', paywall: true })
-    }
-
     const { projectType, location, height, budget, programme, brief, file } = req.body
 
     const systemPrompt = `You are CladWise UAE's Senior Material Specification Engineer. You produce professional, precise, actionable facade cladding recommendations for UAE construction projects.
