@@ -915,6 +915,169 @@ app.post('/api/ai/specs', async (req, res) => {
   }
 })
 
+// ─── AI GENERIC IMAGE ANALYSIS (used by smart estimator preview) ──────────────
+app.post('/api/ai/drawing-analysis-generic', async (req, res) => {
+  try {
+    const { data, mediaType, prompt } = req.body
+    if (!data || !prompt) return res.status(400).json({ message: 'data and prompt required' })
+
+    const contentBlock = { type: 'image', source: { type: 'base64', media_type: mediaType || 'image/jpeg', data } }
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 600,
+        messages: [{ role: 'user', content: [contentBlock, { type: 'text', text: prompt + '\n\nReturn ONLY raw JSON, no markdown, no explanation.' }] }]
+      })
+    })
+
+    if (!response.ok) { const e = await response.text(); return res.status(500).json({ message: 'AI error: ' + e }) }
+    const aiData = await response.json()
+    const raw = (aiData.content || []).filter(b => b.type === 'text').map(b => b.text).join('')
+    const clean = raw.replace(/```json|```/g, '').trim()
+    const s = clean.indexOf('{'), e2 = clean.lastIndexOf('}')
+    if (s === -1 || e2 === -1) return res.status(500).json({ message: 'Non-JSON AI response' })
+    return res.json(JSON.parse(clean.slice(s, e2 + 1)))
+  } catch (err) {
+    return res.status(500).json({ message: err.message })
+  }
+})
+
+// ─── AI SMART ESTIMATOR ───────────────────────────────────────────────────────
+// Accepts: styleImage (base64), styleMediaType, materialImage (base64), materialMediaType, scale
+app.post('/api/ai/smart-estimate', async (req, res) => {
+  try {
+    const { styleImage, styleMediaType, materialImage, materialMediaType, scale, scaleUnit } = req.body
+
+    const buildImgBlock = (data, mt) => ({
+      type: 'image',
+      source: { type: 'base64', media_type: mt || 'image/jpeg', data }
+    })
+
+    const messages = []
+
+    // Build content array — style image first, then material image if provided
+    const content = []
+    if (styleImage) {
+      content.push(buildImgBlock(styleImage, styleMediaType))
+      content.push({ type: 'text', text: '--- This is the DESIGN/STYLE image above ---' })
+    }
+    if (materialImage) {
+      content.push(buildImgBlock(materialImage, materialMediaType))
+      content.push({ type: 'text', text: '--- This is the MATERIAL/PANEL image above ---' })
+    }
+
+    const scaleNote = scaleUnit === 'sqft'
+      ? `Project scale: ${scale} sq ft (${Math.round(scale * 0.0929)} m²)`
+      : scaleUnit === 'category'
+      ? `Project scale category: ${scale} (Small ≈ 200–500 m², Medium ≈ 500–2000 m², Large ≈ 2000–8000 m²)`
+      : `Project scale: ${scale} m²`
+
+    content.push({ type: 'text', text: `
+You are a UAE facade cost estimation expert. You have been provided with visual inputs and a project scale. Analyse the images and return a cost estimate.
+
+${scaleNote}
+
+UAE Market Rate Reference (AED/m² supply-only mid-range):
+- GFRC (Glass Fibre Reinforced Concrete): 350–920 AED/m²
+- GFRP (Glass Fibre Reinforced Polymer): 280–760 AED/m²  
+- Aluminium Cladding: 220–610 AED/m²
+- Natural Stone: 620–1850 AED/m²
+- ACM-FR (Fire-Rated Composite): 185–430 AED/m²
+- Fibre Cement: 185–390 AED/m²
+- High-end Terracotta/Ceramic: 450–1100 AED/m²
+- Timber/Timber-look: 380–850 AED/m²
+
+Style complexity multipliers (applied to total installed cost):
+- Minimalist / Flat rectilinear: 0.88
+- Modern / Clean: 1.00
+- Industrial / Raw: 1.05
+- Traditional / Heritage: 1.18
+- Luxury / Premium finish: 1.35
+- Parametric / Sculptural / Curved: 1.55
+- Ultra-bespoke / Landmark: 1.80
+
+Total installed cost = (material supply + substructure ~25% + installation ~20% + access ~10%) × style_multiplier × scale_factor
+Scale factor: Small 1.12, Medium 1.00, Large 0.88 (economies of scale)
+
+Respond ONLY with a valid JSON object — no markdown, no explanation, no code fences:
+{
+  "style": {
+    "detected": "<style name, e.g. Minimalist Seamless, Industrial Raw, Parametric Curved>",
+    "aesthetic_category": "<one of: Minimalist | Modern | Industrial | Traditional | Luxury | Parametric | Ultra-Bespoke>",
+    "complexity_multiplier": <number>,
+    "style_driver": "<one sentence: how this style choice specifically affects cost>",
+    "confidence": <0-100>
+  },
+  "material": {
+    "identified": "<material name>",
+    "category": "<one of: GFRC | GFRP | Aluminum | Stone | ACM-FR | Fibre Cement | Terracotta | Timber | Unknown>",
+    "supply_rate_lo": <number AED/m²>,
+    "supply_rate_mid": <number AED/m²>,
+    "supply_rate_hi": <number AED/m²>,
+    "material_note": "<one sentence on material identification and quality tier>",
+    "confidence": <0-100>
+  },
+  "estimate": {
+    "area_m2": <number — derived from scale input>,
+    "scale_category": "<Small | Medium | Large>",
+    "scale_factor": <number>,
+    "total_lo": <number AED — full installed low>,
+    "total_mid": <number AED — full installed mid>,
+    "total_hi": <number AED — full installed high>,
+    "per_m2_lo": <number AED/m²>,
+    "per_m2_mid": <number AED/m²>,
+    "per_m2_hi": <number AED/m²>,
+    "breakdown": {
+      "material_supply_pct": <number 0-1>,
+      "substructure_pct": <number 0-1>,
+      "installation_pct": <number 0-1>,
+      "access_pct": <number 0-1>
+    },
+    "style_cost_impact_pct": <number — percentage of total cost attributable to the style complexity above baseline>,
+    "style_cost_impact_aed": <number AED — absolute extra cost from the style choice vs. simple baseline>
+  },
+  "recommendation": "<2–3 sentences: practical guidance for this combination of style and material in the UAE market>",
+  "overall_confidence": <0-100>
+}` })
+
+    messages.push({ role: 'user', content })
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1200,
+        messages
+      })
+    })
+
+    if (!response.ok) {
+      const err = await response.text()
+      return res.status(500).json({ message: 'AI error: ' + err })
+    }
+
+    const aiData = await response.json()
+    const raw = (aiData.content || []).filter(b => b.type === 'text').map(b => b.text).join('')
+    const clean = raw.replace(/```json|```/g, '').trim()
+    const s = clean.indexOf('{'), e = clean.lastIndexOf('}')
+    if (s === -1 || e === -1) return res.status(500).json({ message: 'AI returned non-JSON: ' + raw.slice(0,200) })
+
+    const parsed = JSON.parse(clean.slice(s, e + 1))
+    return res.json(parsed)
+
+  } catch (err) {
+    return res.status(500).json({ message: 'Smart estimate error: ' + err.message })
+  }
+})
+
 // ─── WAITLIST ─────────────────────────────────────────────────────────────────
 app.post('/api/waitlist', async (req, res) => {
   const { email, source } = req.body;
