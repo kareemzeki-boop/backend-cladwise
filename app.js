@@ -60,7 +60,22 @@ async function initDB() {
       verified_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
+
+    CREATE TABLE IF NOT EXISTS supplier_applications (
+      id SERIAL PRIMARY KEY,
+      company_name TEXT NOT NULL,
+      contact_email TEXT NOT NULL,
+      contact_name TEXT,
+      data JSONB NOT NULL DEFAULT '{}',
+      status TEXT DEFAULT 'pending',
+      review_note TEXT,
+      reviewed_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
   `)
+  // Add columns that may be missing on existing deployments
+  await db.query(`ALTER TABLE supplier_applications ADD COLUMN IF NOT EXISTS review_note TEXT`).catch(() => {})
+  await db.query(`ALTER TABLE supplier_applications ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ`).catch(() => {})
   console.log('✅ Database tables ready')
 }
 
