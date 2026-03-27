@@ -1168,3 +1168,88 @@ initDB().then(() => {
   console.error('❌ DB init failed:', err.message)
   process.exit(1)
 })
+
+// ─── RFQ: CREATE TABLE ────────────────────────────────────────────────────────
+// (called at startup via initDB extension below)
+
+// ─── RFQ: SUBMIT ─────────────────────────────────────────────────────────────
+app.post('/api/rfq', async (req, res) => {
+  try {
+    const { supplierName, supplierEmail, material, projectType, userName, userEmail, message, sendCopy } = req.body
+    if (!userName?.trim() || !userEmail?.trim()) {
+      return res.status(400).json({ message: 'Name and email are required.' })
+    }
+
+    // Ensure table exists
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS rfq_submissions (
+        id SERIAL PRIMARY KEY,
+        supplier_name TEXT NOT NULL,
+        supplier_email TEXT,
+        material TEXT,
+        project_type TEXT,
+        user_name TEXT NOT NULL,
+        user_email TEXT NOT NULL,
+        message TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `)
+
+    const { rows } = await db.query(
+      `INSERT INTO rfq_submissions (supplier_name, supplier_email, material, project_type, user_name, user_email, message)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+      [supplierName || '', supplierEmail || '', material || '', projectType || '', userName.trim(), userEmail.trim(), message || '']
+    )
+    const rfqId = rows[0].id
+
+    // Email to supplier (only if they have an email)
+    if (supplierEmail) {
+      await sendEmail({
+        to: supplierEmail,
+        subject: `New RFQ via CladWise UAE — ${material || 'Façade Material'} · Ref #${rfqId}`,
+        html: `
+          <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;background:#0b110d;color:#edf2ed;padding:32px;border-radius:8px">
+            <div style="font-size:11px;letter-spacing:3px;color:#00e5a0;text-transform:uppercase;margin-bottom:8px">CladWise UAE · RFQ Notification</div>
+            <h2 style="font-size:24px;margin:0 0 24px;color:#ffffff">New Request for Quotation</h2>
+            <table style="width:100%;border-collapse:collapse">
+              <tr><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;color:#8a9a8e;font-size:12px;width:140px">Reference</td><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;font-size:13px">#${rfqId}</td></tr>
+              <tr><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;color:#8a9a8e;font-size:12px">Material</td><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;font-size:13px;color:#00e5a0">${material || '—'}</td></tr>
+              <tr><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;color:#8a9a8e;font-size:12px">Project Type</td><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;font-size:13px">${projectType || '—'}</td></tr>
+              <tr><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;color:#8a9a8e;font-size:12px">From</td><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;font-size:13px">${userName}</td></tr>
+              <tr><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;color:#8a9a8e;font-size:12px">Email</td><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;font-size:13px"><a href="mailto:${userEmail}" style="color:#00e5a0">${userEmail}</a></td></tr>
+              ${message ? `<tr><td style="padding:10px 0;color:#8a9a8e;font-size:12px;vertical-align:top">Message</td><td style="padding:10px 0;font-size:13px;line-height:1.6">${message}</td></tr>` : ''}
+            </table>
+            <div style="margin-top:28px;padding:16px;background:#111a13;border-radius:6px;font-size:12px;color:#8a9a8e">
+              Reply directly to <a href="mailto:${userEmail}" style="color:#00e5a0">${userEmail}</a> to respond to this enquiry.
+            </div>
+            <div style="margin-top:20px;font-size:11px;color:#3d5e35">CladWise UAE · cladwise.ae · Ref #${rfqId}</div>
+          </div>`
+      })
+    }
+
+    // Copy to user
+    if (sendCopy) {
+      await sendEmail({
+        to: userEmail.trim(),
+        subject: `Your RFQ to ${supplierName} — CladWise UAE · Ref #${rfqId}`,
+        html: `
+          <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;background:#0b110d;color:#edf2ed;padding:32px;border-radius:8px">
+            <div style="font-size:11px;letter-spacing:3px;color:#00e5a0;text-transform:uppercase;margin-bottom:8px">CladWise UAE · RFQ Confirmation</div>
+            <h2 style="font-size:22px;margin:0 0 8px;color:#ffffff">RFQ Sent Successfully</h2>
+            <p style="color:#8a9a8e;font-size:13px;margin:0 0 24px">Your request for quotation has been sent to <strong style="color:#edf2ed">${supplierName}</strong>.</p>
+            <table style="width:100%;border-collapse:collapse">
+              <tr><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;color:#8a9a8e;font-size:12px;width:140px">Supplier</td><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;font-size:13px">${supplierName}</td></tr>
+              <tr><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;color:#8a9a8e;font-size:12px">Material</td><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;font-size:13px;color:#00e5a0">${material || '—'}</td></tr>
+              <tr><td style="padding:10px 0;color:#8a9a8e;font-size:12px">Reference</td><td style="padding:10px 0;font-size:13px">#${rfqId}</td></tr>
+            </table>
+            <div style="margin-top:20px;font-size:11px;color:#3d5e35">CladWise UAE · cladwise.ae</div>
+          </div>`
+      })
+    }
+
+    return res.json({ ok: true, rfqId })
+  } catch (err) {
+    console.error('RFQ error:', err)
+    return res.status(500).json({ message: err.message })
+  }
+})
