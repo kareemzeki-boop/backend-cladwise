@@ -1175,79 +1175,89 @@ initDB().then(() => {
 // ─── RFQ: SUBMIT ─────────────────────────────────────────────────────────────
 app.post('/api/rfq', async (req, res) => {
   try {
-    const { supplierName, supplierEmail, material, projectType, userName, userEmail, message, sendCopy } = req.body
+    const { suppliers, material, projectType, userName, userEmail, message, sendCopy, fileBase64, fileName } = req.body
     if (!userName?.trim() || !userEmail?.trim()) {
       return res.status(400).json({ message: 'Name and email are required.' })
     }
+    // suppliers = array of { name, email } OR single legacy fields
+    const supplierList = Array.isArray(suppliers) && suppliers.length
+      ? suppliers
+      : [{ name: req.body.supplierName || '', email: req.body.supplierEmail || '' }]
 
-    // Ensure table exists
+    // Ensure table
     await db.query(`
       CREATE TABLE IF NOT EXISTS rfq_submissions (
         id SERIAL PRIMARY KEY,
-        supplier_name TEXT NOT NULL,
+        supplier_name TEXT,
         supplier_email TEXT,
         material TEXT,
         project_type TEXT,
         user_name TEXT NOT NULL,
         user_email TEXT NOT NULL,
         message TEXT,
+        file_name TEXT,
         created_at TIMESTAMPTZ DEFAULT NOW()
       )
     `)
+    await db.query(`ALTER TABLE rfq_submissions ADD COLUMN IF NOT EXISTS file_name TEXT`).catch(()=>{})
 
-    const { rows } = await db.query(
-      `INSERT INTO rfq_submissions (supplier_name, supplier_email, material, project_type, user_name, user_email, message)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-      [supplierName || '', supplierEmail || '', material || '', projectType || '', userName.trim(), userEmail.trim(), message || '']
-    )
-    const rfqId = rows[0].id
+    const ids = []
+    for (const sup of supplierList) {
+      const { rows } = await db.query(
+        `INSERT INTO rfq_submissions (supplier_name, supplier_email, material, project_type, user_name, user_email, message, file_name)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+        [sup.name||'', sup.email||'', material||'', projectType||'', userName.trim(), userEmail.trim(), message||'', fileName||'']
+      )
+      ids.push(rows[0].id)
 
-    // Email to supplier (only if they have an email)
-    if (supplierEmail) {
-      await sendEmail({
-        to: supplierEmail,
-        subject: `New RFQ via CladWise UAE — ${material || 'Façade Material'} · Ref #${rfqId}`,
-        html: `
-          <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;background:#0b110d;color:#edf2ed;padding:32px;border-radius:8px">
+      // Email each supplier
+      if (sup.email) {
+        const fileNote = fileName ? `<tr><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;color:#8a9a8e;font-size:12px">File Attached</td><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;font-size:13px">${fileName}</td></tr>` : ''
+        const multiNote = supplierList.length > 1 ? `<div style="margin-top:12px;padding:10px 14px;background:#0d1a10;border-radius:6px;font-size:11px;color:#8a9a8e">Note: This RFQ was also sent to ${supplierList.length - 1} other supplier(s).</div>` : ''
+        await sendEmail({
+          to: sup.email,
+          subject: `New RFQ via CladWise UAE — ${material || 'Façade Material'} · Ref #${rows[0].id}`,
+          html: `<div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;background:#0b110d;color:#edf2ed;padding:32px;border-radius:8px">
             <div style="font-size:11px;letter-spacing:3px;color:#00e5a0;text-transform:uppercase;margin-bottom:8px">CladWise UAE · RFQ Notification</div>
-            <h2 style="font-size:24px;margin:0 0 24px;color:#ffffff">New Request for Quotation</h2>
+            <h2 style="font-size:22px;margin:0 0 20px;color:#ffffff">New Request for Quotation</h2>
             <table style="width:100%;border-collapse:collapse">
-              <tr><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;color:#8a9a8e;font-size:12px;width:140px">Reference</td><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;font-size:13px">#${rfqId}</td></tr>
-              <tr><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;color:#8a9a8e;font-size:12px">Material</td><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;font-size:13px;color:#00e5a0">${material || '—'}</td></tr>
-              <tr><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;color:#8a9a8e;font-size:12px">Project Type</td><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;font-size:13px">${projectType || '—'}</td></tr>
+              <tr><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;color:#8a9a8e;font-size:12px;width:130px">Reference</td><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;font-size:13px">#${rows[0].id}</td></tr>
+              <tr><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;color:#8a9a8e;font-size:12px">Material</td><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;font-size:13px;color:#00e5a0">${material||'—'}</td></tr>
+              <tr><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;color:#8a9a8e;font-size:12px">Project Type</td><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;font-size:13px">${projectType||'—'}</td></tr>
               <tr><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;color:#8a9a8e;font-size:12px">From</td><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;font-size:13px">${userName}</td></tr>
               <tr><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;color:#8a9a8e;font-size:12px">Email</td><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;font-size:13px"><a href="mailto:${userEmail}" style="color:#00e5a0">${userEmail}</a></td></tr>
+              ${fileNote}
               ${message ? `<tr><td style="padding:10px 0;color:#8a9a8e;font-size:12px;vertical-align:top">Message</td><td style="padding:10px 0;font-size:13px;line-height:1.6">${message}</td></tr>` : ''}
             </table>
-            <div style="margin-top:28px;padding:16px;background:#111a13;border-radius:6px;font-size:12px;color:#8a9a8e">
-              Reply directly to <a href="mailto:${userEmail}" style="color:#00e5a0">${userEmail}</a> to respond to this enquiry.
-            </div>
-            <div style="margin-top:20px;font-size:11px;color:#3d5e35">CladWise UAE · cladwise.ae · Ref #${rfqId}</div>
+            ${multiNote}
+            <div style="margin-top:24px;padding:14px;background:#111a13;border-radius:6px;font-size:12px;color:#8a9a8e">Reply directly to <a href="mailto:${userEmail}" style="color:#00e5a0">${userEmail}</a></div>
+            <div style="margin-top:16px;font-size:11px;color:#3d5e35">CladWise UAE · cladwise.ae · Ref #${rows[0].id}</div>
           </div>`
-      })
+        })
+      }
     }
 
     // Copy to user
     if (sendCopy) {
+      const names = supplierList.map(s => s.name).filter(Boolean).join(', ')
       await sendEmail({
         to: userEmail.trim(),
-        subject: `Your RFQ to ${supplierName} — CladWise UAE · Ref #${rfqId}`,
-        html: `
-          <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;background:#0b110d;color:#edf2ed;padding:32px;border-radius:8px">
-            <div style="font-size:11px;letter-spacing:3px;color:#00e5a0;text-transform:uppercase;margin-bottom:8px">CladWise UAE · RFQ Confirmation</div>
-            <h2 style="font-size:22px;margin:0 0 8px;color:#ffffff">RFQ Sent Successfully</h2>
-            <p style="color:#8a9a8e;font-size:13px;margin:0 0 24px">Your request for quotation has been sent to <strong style="color:#edf2ed">${supplierName}</strong>.</p>
-            <table style="width:100%;border-collapse:collapse">
-              <tr><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;color:#8a9a8e;font-size:12px;width:140px">Supplier</td><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;font-size:13px">${supplierName}</td></tr>
-              <tr><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;color:#8a9a8e;font-size:12px">Material</td><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;font-size:13px;color:#00e5a0">${material || '—'}</td></tr>
-              <tr><td style="padding:10px 0;color:#8a9a8e;font-size:12px">Reference</td><td style="padding:10px 0;font-size:13px">#${rfqId}</td></tr>
-            </table>
-            <div style="margin-top:20px;font-size:11px;color:#3d5e35">CladWise UAE · cladwise.ae</div>
-          </div>`
+        subject: `Your RFQ sent to ${names} — CladWise UAE`,
+        html: `<div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;background:#0b110d;color:#edf2ed;padding:32px;border-radius:8px">
+          <div style="font-size:11px;letter-spacing:3px;color:#00e5a0;text-transform:uppercase;margin-bottom:8px">CladWise UAE · RFQ Confirmation</div>
+          <h2 style="font-size:22px;margin:0 0 8px;color:#ffffff">RFQ Sent Successfully</h2>
+          <p style="color:#8a9a8e;font-size:13px;margin:0 0 20px">Your RFQ was sent to <strong style="color:#edf2ed">${names}</strong>.</p>
+          <table style="width:100%;border-collapse:collapse">
+            <tr><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;color:#8a9a8e;font-size:12px;width:130px">Suppliers</td><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;font-size:13px">${names}</td></tr>
+            <tr><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;color:#8a9a8e;font-size:12px">Material</td><td style="padding:10px 0;border-bottom:1px solid #1e2e1e;font-size:13px;color:#00e5a0">${material||'—'}</td></tr>
+            <tr><td style="padding:10px 0;color:#8a9a8e;font-size:12px">References</td><td style="padding:10px 0;font-size:13px">${ids.map(i=>'#'+i).join(', ')}</td></tr>
+          </table>
+          <div style="margin-top:16px;font-size:11px;color:#3d5e35">CladWise UAE · cladwise.ae</div>
+        </div>`
       })
     }
 
-    return res.json({ ok: true, rfqId })
+    return res.json({ ok: true, rfqIds: ids, count: supplierList.length })
   } catch (err) {
     console.error('RFQ error:', err)
     return res.status(500).json({ message: err.message })
